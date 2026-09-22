@@ -10,6 +10,9 @@ GMAIL_ADDRESS, GMAIL_APP_PASSWORD, RECIPIENTS (comma separated).
 Everyone except the sending account goes on Bcc, so recipients cannot see the
 distribution list.
 
+The layout is built for a phone first. Each notice is four short lines rather
+than a paragraph, because the point is to skim it on the way to something else.
+
 Run locally without sending:  python watcher.py --no-send
 Write the HTML to a file too:  python watcher.py --no-send --html out.html
 """
@@ -32,6 +35,8 @@ WINDOW_HOURS = 48
 HDRS = {"Accept": "application/hal+json", "User-Agent": "Mozilla/5.0"}
 CENTRAL = datetime.timezone(datetime.timedelta(hours=-5))
 
+FONT = "-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif"
+
 # Badge colour per notice type. Text, background, border.
 TYPE_STYLE = {
     "Solicitation": ("#B42318", "#FEF3F2", "#FECDCA"),
@@ -49,19 +54,41 @@ SET_ASIDE = {
     "SDVOSBS": "SDVOSB SOLE SOURCE",
     "VSA": "VET-OWNED SET-ASIDE",
     "VSS": "VET-OWNED SOLE SOURCE",
-    "SBA": "SMALL BUSINESS SET-ASIDE",
+    "SBA": "SMALL BUSINESS",
     "SBP": "PARTIAL SMALL BUSINESS",
-    "8A": "8(A) SET-ASIDE",
+    "8A": "8(A)",
     "8AN": "8(A) SOLE SOURCE",
-    "HZC": "HUBZONE SET-ASIDE",
+    "HZC": "HUBZONE",
     "HZS": "HUBZONE SOLE SOURCE",
-    "WOSB": "WOSB SET-ASIDE",
+    "WOSB": "WOSB",
     "WOSBSS": "WOSB SOLE SOURCE",
-    "EDWOSB": "EDWOSB SET-ASIDE",
+    "EDWOSB": "EDWOSB",
     "EDWOSBSS": "EDWOSB SOLE SOURCE",
 }
 # The ones that matter most to Guardian and Direct Point get the loud colour.
 VET_SET_ASIDES = {"SDVOSBC", "SDVOSBS", "VSA", "VSS"}
+
+# Long legal agency names wrap to two lines on a phone and say nothing extra.
+AGENCY_SHORT = {
+    "GENERAL SERVICES ADMINISTRATION": "GSA",
+    "VETERANS AFFAIRS, DEPARTMENT OF": "Veterans Affairs",
+    "DEPT OF DEFENSE": "Defense",
+    "AGRICULTURE, DEPARTMENT OF": "Agriculture",
+    "JUSTICE, DEPARTMENT OF": "Justice",
+    "HOMELAND SECURITY, DEPARTMENT OF": "Homeland Security",
+    "HEALTH AND HUMAN SERVICES, DEPARTMENT OF": "HHS",
+    "SOCIAL SECURITY ADMINISTRATION": "Social Security",
+    "ENVIRONMENTAL PROTECTION AGENCY": "EPA",
+}
+
+# Descriptions that carry no information. Skip rather than print a stub.
+# The award-notice disclaimers are the worst offenders: three lines telling you
+# what the notice is not. The badge already says what it is.
+JUNK_DESC = ("see attach", "see the attach", "n/a", "tbd", "see below",
+             "follow instructions within the rlp", "this is an award notice",
+             "this is not a request", "this notice is not a request",
+             "this is a sources sought", "this is a sources-sought",
+             "the government is issuing this", "this synopsis is for")
 
 
 def get_json(url, timeout=60):
@@ -80,6 +107,18 @@ def clean(html):
 def esc(s):
     return (str(s or "").replace("&", "&amp;").replace("<", "&lt;")
             .replace(">", "&gt;").replace('"', "&quot;"))
+
+
+def short_agency(name):
+    if not name:
+        return None
+    n = name.strip().upper()
+    if n in AGENCY_SHORT:
+        return AGENCY_SHORT[n]
+    for tail in (", DEPARTMENT OF THE", ", DEPARTMENT OF"):
+        if n.endswith(tail):
+            return n[: -len(tail)].title()
+    return name.strip()
 
 def fetch():
     cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=WINDOW_HOURS)
@@ -127,11 +166,11 @@ def fetch():
                     "solicitationNumber": (o.get("solicitationNumber") or "").strip(),
                     "published": pub,
                     "responseDate": o.get("responseDate"),
-                    "department": org[0].get("name") if org else None,
+                    "department": short_agency(org[0].get("name")) if org else None,
                     "office": org[-1].get("name") if len(org) > 1 else None,
                     "matchedNaics": code,
                     "isCanceled": bool(o.get("isCanceled")),
-                    "description": clean((o.get("descriptions") or [{}])[0].get("content"))[:320],
+                    "description": clean((o.get("descriptions") or [{}])[0].get("content")),
                     "link": "https://sam.gov/opp/%s/view" % oid,
                     "setAside": None, "location": None, "contact": None,
                     "awardAmount": None, "awardee": None,
@@ -178,40 +217,65 @@ def enrich(hits, errors):
         h["awardee"] = ((award.get("awardee") or {}).get("name")) or None
 
 
-def due_text(h, now):
+def due_parts(h, now):
+    """Return (text, days_remaining). Either may be None."""
     if not h["responseDate"]:
-        return None
+        return None, None
     try:
         d = datetime.datetime.fromisoformat(h["responseDate"])
     except ValueError:
-        return h["responseDate"]
+        return h["responseDate"], None
     days = (d - now).days
-    when = d.strftime("%b %d, %Y")
+    when = d.strftime("%b %d").replace(" 0", " ")
     if days < 0:
-        return "%s (closed)" % when
-    return "%s (%d days)" % (when, days)
+        return "%s (closed)" % when, days
+    if days == 0:
+        return "%s (today)" % when, 0
+    return "%s (%d days)" % (when, days), days
 
 
-def fmt_date(dt):
-    return dt.astimezone(CENTRAL).strftime("%b %d, %Y at %I:%M %p CT")
+def posted_text(dt):
+    return dt.astimezone(CENTRAL).strftime("%b %d, %I:%M %p").replace(" 0", " ")
+
+
+def useful_desc(h, limit=110):
+    """Two lines at most, and nothing at all when it would just be boilerplate."""
+    if h["noticeType"] == "Award Notice":
+        return None  # the amount and the awardee are the whole story
+    d = (h["description"] or "").strip()
+    if len(d) < 30 or d.lower().startswith(JUNK_DESC):
+        return None
+    return d[:limit].rstrip() + ("..." if len(d) > limit else "")
 
 def text_card(h, now):
-    lines = ["[%s]%s %s" % (h["noticeType"].upper(),
-                            " [%s]" % h["setAside"][1] if h["setAside"] else "",
-                            h["title"])]
+    head = "[%s]" % h["noticeType"].upper()
+    if h["setAside"]:
+        head += " [%s]" % h["setAside"][1]
+    if h["isCanceled"]:
+        head += " [CANCELLED]"
+    lines = ["%s %s" % (head, h["title"])]
+
     org = " > ".join(x for x in (h["department"], h["office"]) if x)
     if org:
         lines.append("  " + org)
-    lines.append("  Published %s" % fmt_date(h["published"]))
-    due = due_text(h, now)
+
+    facts = []
+    due, _ = due_parts(h, now)
     if due:
-        lines.append("  Offers due %s" % due)
+        facts.append("Due " + due)
     if h["location"]:
-        lines.append("  Location %s" % h["location"])
-    if h["awardAmount"] or h["awardee"]:
-        lines.append("  Award %s to %s" % (h["awardAmount"] or "amount not stated",
-                                           h["awardee"] or "awardee not stated"))
+        facts.append(h["location"])
+    if h["awardAmount"]:
+        facts.append("Awarded " + h["awardAmount"])
+    if h["awardee"]:
+        facts.append("to " + h["awardee"])
+    facts.append("Posted " + posted_text(h["published"]))
+    lines.append("  " + " | ".join(facts))
+
     meta = [x for x in (h["solicitationNumber"], "NAICS " + h["matchedNaics"]) if x]
+    if h["contact"]:
+        name, mail = h["contact"]
+        meta.append(" ".join(x for x in (name, mail) if x))
     lines.append("  " + " | ".join(meta))
     lines.append("  " + h["link"])
     return "\n".join(lines)
@@ -242,19 +306,10 @@ def build_text(hits, errors, now, recent, older):
 
 def badge(label, fg, bg, border):
     return (
-        '<span style="display:inline-block;padding:3px 8px;margin:0 6px 6px 0;'
-        'font:600 10px/1.2 -apple-system,Segoe UI,Helvetica,Arial,sans-serif;'
-        'letter-spacing:.6px;text-transform:uppercase;color:%s;background:%s;'
-        'border:1px solid %s;border-radius:4px;">%s</span>' % (fg, bg, border, esc(label)))
-
-
-def field(label, value, color="#101828"):
-    return (
-        '<td style="padding:0 22px 0 0;vertical-align:top;">'
-        '<div style="font:600 10px/1.4 -apple-system,Segoe UI,Helvetica,Arial,sans-serif;'
-        'letter-spacing:.6px;text-transform:uppercase;color:#98A2B3;white-space:nowrap;">%s</div>'
-        '<div style="font:600 13px/1.5 -apple-system,Segoe UI,Helvetica,Arial,sans-serif;'
-        'color:%s;white-space:nowrap;">%s</div></td>' % (esc(label), color, esc(value)))
+        '<span style="display:inline-block;padding:3px 7px;margin:0 5px 5px 0;'
+        'font:700 10px/1.2 %s;letter-spacing:.5px;text-transform:uppercase;'
+        'color:%s;background:%s;border:1px solid %s;border-radius:4px;">%s</span>'
+        % (FONT, fg, bg, border, esc(label)))
 
 
 def html_card(h, now):
@@ -271,85 +326,97 @@ def html_card(h, now):
 
     org = " &rsaquo; ".join(esc(x) for x in (h["department"], h["office"]) if x)
 
-    cells = [field("Published", fmt_date(h["published"]))]
-    due = due_text(h, now)
+    facts = []
+    due, days = due_parts(h, now)
     if due:
-        cells.append(field("Offers due", due, "#B42318" if "days" in due else "#101828"))
+        urgent = days is not None and days <= 21
+        facts.append('<span style="color:%s;font-weight:700;">Due %s</span>'
+                     % ("#B42318" if urgent else "#344054", esc(due)))
     if h["location"]:
-        cells.append(field("Location", h["location"]))
+        facts.append('<span style="font-weight:600;">%s</span>' % esc(h["location"]))
     if h["awardAmount"]:
-        cells.append(field("Award amount", h["awardAmount"], "#027A48"))
+        facts.append('<span style="color:#027A48;font-weight:700;">%s</span>'
+                     % esc(h["awardAmount"]))
     if h["awardee"]:
-        cells.append(field("Awardee", h["awardee"], "#027A48"))
+        facts.append('<span style="color:#027A48;font-weight:600;">%s</span>' % esc(h["awardee"]))
+    facts.append('<span style="color:#98A2B3;">Posted %s</span>'
+                 % esc(posted_text(h["published"])))
 
-    meta = [x for x in (h["solicitationNumber"], "NAICS " + h["matchedNaics"]) if x]
+    meta = [esc(x) for x in (h["solicitationNumber"], "NAICS " + h["matchedNaics"]) if x]
     if h["contact"]:
         name, mail = h["contact"]
-        meta.append("%s%s" % (name or "", " " + mail if mail else ""))
+        meta.append(esc(" ".join(x for x in (name, mail) if x)))
 
-    desc = ""
-    if h["description"]:
-        desc = ('<div style="margin:10px 0 0;font:400 13px/1.6 -apple-system,Segoe UI,'
-                'Helvetica,Arial,sans-serif;color:#667085;">%s</div>' % esc(h["description"]))
+    desc = useful_desc(h)
+    desc_html = ""
+    if desc:
+        desc_html = ('<div style="margin:7px 0 0;font:400 13px/1.5 %s;color:#667085;">%s</div>'
+                     % (FONT, esc(desc)))
 
     return (
         '<table role="presentation" width="100%%" cellpadding="0" cellspacing="0" '
-        'style="border:1px solid #EAECF0;border-radius:8px;background:#FFFFFF;margin:0 0 14px;">'
-        '<tr><td style="padding:16px 18px;">'
+        'style="width:100%%;border:1px solid #EAECF0;border-radius:10px;'
+        'background:#FFFFFF;margin:0 0 12px;">'
+        '<tr><td style="padding:14px 15px;">'
+        '<div style="margin:0 0 3px;">%s</div>'
+        '<div style="margin:0 0 3px;"><a href="%s" style="font:700 17px/1.35 %s;'
+        'color:#1849A9;text-decoration:none;">%s</a></div>'
+        '<div style="margin:0 0 7px;font:600 11px/1.4 %s;letter-spacing:.4px;'
+        'text-transform:uppercase;color:#98A2B3;">%s</div>'
+        '<div style="font:400 13px/1.7 %s;color:#344054;">%s</div>'
         '%s'
-        '<div style="margin:2px 0 6px;"><a href="%s" style="font:600 16px/1.4 -apple-system,'
-        'Segoe UI,Helvetica,Arial,sans-serif;color:#1849A9;text-decoration:none;">%s</a></div>'
-        '<div style="margin:0 0 12px;font:600 10px/1.4 -apple-system,Segoe UI,Helvetica,Arial,'
-        'sans-serif;letter-spacing:.6px;text-transform:uppercase;color:#98A2B3;">%s</div>'
-        '<table role="presentation" cellpadding="0" cellspacing="0"><tr>%s</tr></table>'
-        '%s'
-        '<div style="margin:12px 0 0;padding:10px 0 0;border-top:1px solid #F2F4F7;'
-        'font:400 12px/1.5 -apple-system,Segoe UI,Helvetica,Arial,sans-serif;color:#98A2B3;">%s</div>'
+        '<div style="margin:9px 0 0;padding:8px 0 0;border-top:1px solid #F2F4F7;'
+        'font:400 11px/1.6 %s;color:#98A2B3;word-break:break-word;">%s</div>'
         '</td></tr></table>'
-        % (badges, esc(h["link"]), esc(h["title"]), org or "Agency not stated",
-           "".join(cells), desc, esc(" | ".join(meta))))
+        % (badges, esc(h["link"]), FONT, esc(h["title"]), FONT,
+           org or "Agency not stated", FONT,
+           " &middot; ".join(facts), desc_html, FONT, " &middot; ".join(meta)))
 
 def build_html(hits, errors, now, recent, older):
-    parts = ['<div style="background:#F9FAFB;padding:24px 12px;">'
-             '<div style="max-width:680px;margin:0 auto;">']
+    parts = ['<div style="background:#F4F5F7;padding:16px 10px;">'
+             '<div style="max-width:660px;margin:0 auto;">']
 
     parts.append(
-        '<div style="margin:0 0 4px;font:700 22px/1.3 -apple-system,Segoe UI,Helvetica,'
-        'Arial,sans-serif;color:#101828;">%d notices in the last 48 hours</div>'
-        '<div style="margin:0 0 20px;font:400 14px/1.5 -apple-system,Segoe UI,Helvetica,'
-        'Arial,sans-serif;color:#667085;">%d in the last 12 hours, %d before that. '
-        'NAICS %s on SAM.gov.</div>' % (len(hits), len(recent), len(older), ", ".join(NAICS)))
+        '<div style="margin:0 0 2px;font:800 21px/1.25 %s;color:#101828;">'
+        '%d notices in the last 48 hours</div>'
+        '<div style="margin:0;font:400 13px/1.5 %s;color:#667085;">'
+        '%d in the last 12 hours, %d before that</div>'
+        % (FONT, len(hits), FONT, len(recent), len(older)))
 
     if errors:
         parts.append(
-            '<div style="margin:0 0 18px;padding:12px 14px;border:1px solid #FECDCA;'
-            'background:#FEF3F2;border-radius:8px;font:400 13px/1.6 -apple-system,Segoe UI,'
-            'Helvetica,Arial,sans-serif;color:#B42318;"><strong>Fetch errors, this list may be '
-            'incomplete.</strong><br>%s</div>' % "<br>".join(esc(e) for e in errors[:6]))
+            '<div style="margin:10px 0 0;padding:10px 12px;border:1px solid #FECDCA;'
+            'background:#FEF3F2;border-radius:8px;font:400 13px/1.5 %s;color:#B42318;">'
+            '<strong>Fetch errors, this list may be incomplete.</strong><br>%s</div>'
+            % (FONT, "<br>".join(esc(e) for e in errors[:6])))
 
-    for heading, group in (("Posted in the last 12 hours", recent),
-                           ("Posted 12 to 48 hours ago", older)):
+    for heading, group in (("Last 12 hours", recent), ("12 to 48 hours ago", older)):
         parts.append(
-            '<div style="margin:22px 0 12px;padding:0 0 8px;border-bottom:2px solid #EAECF0;'
-            'font:700 12px/1.4 -apple-system,Segoe UI,Helvetica,Arial,sans-serif;'
-            'letter-spacing:.8px;text-transform:uppercase;color:#344054;">%s '
-            '<span style="color:#98A2B3;">(%d)</span></div>' % (esc(heading), len(group)))
+            '<div style="margin:20px 0 10px;padding:0 0 6px;border-bottom:2px solid #D0D5DD;'
+            'font:800 12px/1.4 %s;letter-spacing:.8px;text-transform:uppercase;color:#344054;">'
+            '%s <span style="color:#98A2B3;">(%d)</span></div>'
+            % (FONT, esc(heading), len(group)))
         if not group:
-            parts.append(
-                '<div style="margin:0 0 14px;font:400 13px/1.6 -apple-system,Segoe UI,'
-                'Helvetica,Arial,sans-serif;color:#98A2B3;">None.</div>')
+            parts.append('<div style="margin:0 0 12px;font:400 13px/1.5 %s;color:#98A2B3;">'
+                         'None.</div>' % FONT)
         for h in group:
             parts.append(html_card(h, now))
 
     parts.append(
-        '<div style="margin:24px 0 0;padding:14px 0 0;border-top:1px solid #EAECF0;'
-        'font:400 12px/1.6 -apple-system,Segoe UI,Helvetica,Arial,sans-serif;color:#98A2B3;">'
+        '<div style="margin:18px 0 0;padding:12px 0 0;border-top:1px solid #D0D5DD;'
+        'font:400 11px/1.6 %s;color:#98A2B3;">'
         'Everything posted under NAICS %s in the last 48 hours, de-duplicated across codes. '
-        'No filtering applied. Runs at 8am and 4pm Central.</div>' % ", ".join(NAICS))
+        'No filtering applied. Runs at 8:23am and 4:23pm Central.</div>'
+        % (FONT, ", ".join(NAICS)))
 
     parts.append("</div></div>")
-    return ('<!DOCTYPE html><html><body style="margin:0;padding:0;background:#F9FAFB;">'
-            + "".join(parts) + "</body></html>")
+    return (
+        '<!DOCTYPE html><html><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        '<meta name="color-scheme" content="light dark">'
+        '<meta name="supported-color-schemes" content="light dark">'
+        '</head><body style="margin:0;padding:0;background:#F4F5F7;">'
+        + "".join(parts) + "</body></html>")
 
 
 def send(subject, text_body, html_body):
