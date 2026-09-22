@@ -7,15 +7,20 @@ on:
     #
     # Never schedule on the hour, or on :15, :30 or :45. GitHub queues scheduled
     # runs and drops them under load, and those are the slots everyone else uses.
-    # The 13:00 run on 22 Sep 2026 was dropped entirely, which is why this exists.
     - cron: '23 13 * * *'   # 8:23am Central, primary
     - cron: '53 13 * * *'   # 8:53am Central, backup
     - cron: '23 21 * * *'   # 4:23pm Central, primary
     - cron: '53 21 * * *'   # 4:53pm Central, backup
+    # TEMPORARY smoke tests, 22 Sep 2026. Three scheduled runs were dropped while
+    # this repository was private. These two prove whether making it public fixed
+    # the scheduler. They send nothing, see the guard step. DELETE BOTH once the
+    # question is answered, along with the matching clause below.
+    - cron: '38 23 * * *'
+    - cron: '48 23 * * *'
   workflow_dispatch:
     inputs:
       send_to_all:
-        description: 'Send to the full list. Leave OFF for test runs, which go to Noah only.'
+        description: 'Send to the full list. Leave OFF for test runs, which go to the sending account only.'
         type: boolean
         default: false
 
@@ -41,6 +46,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           skip=false
+          case "${{ github.event.schedule }}" in
+            "38 23 * * *"|"48 23 * * *")
+              echo "Scheduler smoke test. The run existing at all is the result. Not sending."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
           if [ "${{ github.event_name }}" = "schedule" ]; then
             cutoff=$(date -u -d '90 minutes ago' +%Y-%m-%dT%H:%M:%SZ)
             count=$(gh run list --workflow watcher.yml --limit 20 --json databaseId,createdAt,status,conclusion --jq "[.[] | select(.databaseId != ${{ github.run_id }}) | select(.createdAt > \"$cutoff\") | select(.conclusion == \"success\" or .status == \"in_progress\" or .status == \"queued\")] | length") || count=""
@@ -62,8 +74,9 @@ jobs:
         with:
           python-version: '3.12'
 
-      # Scheduled runs go to the full list. A manual run goes to Noah only unless
-      # send_to_all was ticked, so testing never reaches Steve or Todd by accident.
+      # Scheduled runs go to the full list. A manual run goes to the sending
+      # account only unless send_to_all was ticked, so a test never reaches
+      # the wider distribution list by accident.
       - name: Fetch SAM.gov and email the report
         if: steps.guard.outputs.skip != 'true'
         env:
