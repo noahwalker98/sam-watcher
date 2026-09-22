@@ -65,7 +65,7 @@ SET_ASIDE = {
     "EDWOSB": "EDWOSB",
     "EDWOSBSS": "EDWOSB SOLE SOURCE",
 }
-# The ones that matter most to Guardian and Direct Point get the loud colour.
+# The veteran-owned set-asides get the loud colour.
 VET_SET_ASIDES = {"SDVOSBC", "SDVOSBS", "VSA", "VSS"}
 
 # Long legal agency names wrap to two lines on a phone and say nothing extra.
