@@ -27,25 +27,30 @@ jobs:
       # The backup run exists only in case GitHub drops the primary. If a primary
       # already sent this slot, or is still sending it, this exits without
       # emailing, so nobody ever gets the report twice. Manual runs always send.
+      #
+      # This check FAILS OPEN on purpose. If the lookup breaks, we send. A guard
+      # that can silently stop the report is worse than an occasional duplicate.
       - name: Skip if a run already sent recently
         id: guard
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [ "${{ github.event_name }}" != "schedule" ]; then
-            echo "Not a scheduled run. Sending."
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          cutoff=$(date -u -d '90 minutes ago' +%Y-%m-%dT%H:%M:%SZ)
-          count=$(gh run list --workflow watcher.yml --limit 20 --json databaseId,createdAt,status,conclusion --jq "[.[] | select(.databaseId != ${{ github.run_id }}) | select(.createdAt > \"$cutoff\") | select(.conclusion == \"success\" or .status == \"in_progress\" or .status == \"queued\")] | length")
-          echo "Runs already sent or sending since $cutoff: $count"
-          if [ "$count" -gt 0 ]; then
-            echo "The primary already handled this slot. Skipping."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
+          skip=false
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            cutoff=$(date -u -d '90 minutes ago' +%Y-%m-%dT%H:%M:%SZ)
+            count=$(gh run list --workflow watcher.yml --limit 20 --json databaseId,createdAt,status,conclusion --jq "[.[] | select(.databaseId != ${{ github.run_id }}) | select(.createdAt > \"$cutoff\") | select(.conclusion == \"success\" or .status == \"in_progress\" or .status == \"queued\")] | length") || count=""
+            if [ -z "$count" ]; then
+              echo "Guard lookup failed. Sending anyway, a missed report beats a duplicate."
+            elif [ "$count" -gt 0 ]; then
+              echo "$count run(s) already sent or sending since $cutoff. Skipping."
+              skip=true
+            else
+              echo "Nothing sent since $cutoff. Sending."
+            fi
           else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "Manual run. Sending."
           fi
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-python@v5
         if: steps.guard.outputs.skip != 'true'
