@@ -13,6 +13,11 @@ on:
     - cron: '23 21 * * *'   # 4:23pm Central, primary
     - cron: '53 21 * * *'   # 4:53pm Central, backup
   workflow_dispatch:
+    inputs:
+      send_to_all:
+        description: 'Send to the full list. Leave OFF for test runs, which go to Noah only.'
+        type: boolean
+        default: false
 
 permissions:
   actions: read
@@ -57,10 +62,12 @@ jobs:
         with:
           python-version: '3.12'
 
+      # Scheduled runs go to the full list. A manual run goes to Noah only unless
+      # send_to_all was ticked, so testing never reaches Steve or Todd by accident.
       - name: Fetch SAM.gov and email the report
         if: steps.guard.outputs.skip != 'true'
         env:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-          RECIPIENTS: ${{ secrets.RECIPIENTS }}
+          RECIPIENTS: ${{ (github.event_name != 'workflow_dispatch' || inputs.send_to_all) && secrets.RECIPIENTS || secrets.GMAIL_ADDRESS }}
         run: python watcher.py
