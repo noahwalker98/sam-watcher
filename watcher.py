@@ -7,6 +7,9 @@ emails an HTML digest. No scoring, no filtering.
 Runs on GitHub Actions twice a day. Needs three repository secrets:
 GMAIL_ADDRESS, GMAIL_APP_PASSWORD, RECIPIENTS (comma separated).
 
+Everyone except the sending account goes on Bcc, so recipients cannot see the
+distribution list.
+
 Run locally without sending:  python watcher.py --no-send
 Write the HTML to a file too:  python watcher.py --no-send --html out.html
 """
@@ -174,6 +177,7 @@ def enrich(hits, errors):
                 h["awardAmount"] = str(award["amount"])
         h["awardee"] = ((award.get("awardee") or {}).get("name")) or None
 
+
 def due_text(h, now):
     if not h["responseDate"]:
         return None
@@ -190,7 +194,6 @@ def due_text(h, now):
 
 def fmt_date(dt):
     return dt.astimezone(CENTRAL).strftime("%b %d, %Y at %I:%M %p CT")
-
 
 def text_card(h, now):
     lines = ["[%s]%s %s" % (h["noticeType"].upper(),
@@ -252,6 +255,7 @@ def field(label, value, color="#101828"):
         'letter-spacing:.6px;text-transform:uppercase;color:#98A2B3;white-space:nowrap;">%s</div>'
         '<div style="font:600 13px/1.5 -apple-system,Segoe UI,Helvetica,Arial,sans-serif;'
         'color:%s;white-space:nowrap;">%s</div></td>' % (esc(label), color, esc(value)))
+
 
 def html_card(h, now):
     fg, bg, br = TYPE_STYLE.get(h["noticeType"], DEFAULT_STYLE)
@@ -352,10 +356,13 @@ def send(subject, text_body, html_body):
     sender = os.environ["GMAIL_ADDRESS"]
     password = os.environ["GMAIL_APP_PASSWORD"].replace(" ", "")
     recipients = [r.strip() for r in os.environ["RECIPIENTS"].split(",") if r.strip()]
+    bcc = [r for r in recipients if r.lower() != sender.lower()]
 
     msg = EmailMessage()
     msg["From"] = sender
-    msg["To"] = ", ".join(recipients)
+    msg["To"] = sender
+    if bcc:
+        msg["Bcc"] = ", ".join(bcc)
     msg["Subject"] = subject
     msg.set_content(text_body)
     msg.add_alternative(html_body, subtype="html")
@@ -363,7 +370,7 @@ def send(subject, text_body, html_body):
     with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=ssl.create_default_context()) as s:
         s.login(sender, password)
         s.send_message(msg)
-    print("sent to %s" % ", ".join(recipients))
+    print("sent to %d recipients" % (1 + len(bcc)))
 
 
 def main():
