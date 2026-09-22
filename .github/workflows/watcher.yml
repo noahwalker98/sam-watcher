@@ -2,25 +2,58 @@ name: SAM.gov watcher
 
 on:
   schedule:
-    # 13:07 and 21:07 UTC is 8:07am and 4:07pm Central while daylight saving is on.
-    # After November 1 2026 these become 7:07am and 3:07pm Central. Change to 14 and 22 then.
+    # Times are Central while daylight saving is on. After November 1 2026 they
+    # all shift an hour earlier, so change 13 to 14 and 21 to 22 that week.
     #
-    # Deliberately NOT on the hour. GitHub queues scheduled runs and the top of every
-    # hour is its busiest moment, so :00 jobs get delayed and sometimes dropped entirely.
-    # The 13:00 run on 22 Sep 2026 never fired at all. This is GitHub's own advice.
-    - cron: '7 13 * * *'
-    - cron: '7 21 * * *'
+    # Never schedule on the hour, or on :15, :30 or :45. GitHub queues scheduled
+    # runs and drops them under load, and those are the slots everyone else uses.
+    # The 13:00 run on 22 Sep 2026 was dropped entirely, which is why this exists.
+    - cron: '23 13 * * *'   # 8:23am Central, primary
+    - cron: '53 13 * * *'   # 8:53am Central, backup
+    - cron: '23 21 * * *'   # 4:23pm Central, primary
+    - cron: '53 21 * * *'   # 4:53pm Central, backup
   workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
 
 jobs:
   watch:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # The backup run exists only in case GitHub drops the primary. If a primary
+      # already sent this slot, or is still sending it, this exits without
+      # emailing, so nobody ever gets the report twice. Manual runs always send.
+      - name: Skip if a run already sent recently
+        id: guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "Not a scheduled run. Sending."
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          cutoff=$(date -u -d '90 minutes ago' +%Y-%m-%dT%H:%M:%SZ)
+          count=$(gh run list --workflow watcher.yml --limit 20 --json databaseId,createdAt,status,conclusion --jq "[.[] | select(.databaseId != ${{ github.run_id }}) | select(.createdAt > \"$cutoff\") | select(.conclusion == \"success\" or .status == \"in_progress\" or .status == \"queued\")] | length")
+          echo "Runs already sent or sending since $cutoff: $count"
+          if [ "$count" -gt 0 ]; then
+            echo "The primary already handled this slot. Skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/setup-python@v5
+        if: steps.guard.outputs.skip != 'true'
         with:
           python-version: '3.12'
+
       - name: Fetch SAM.gov and email the report
+        if: steps.guard.outputs.skip != 'true'
         env:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
