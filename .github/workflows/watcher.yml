@@ -1,0 +1,25 @@
+name: SAM.gov watcher
+
+on:
+  schedule:
+    # 13:00 and 21:00 UTC is 8am and 4pm Central while daylight saving is on.
+    # After November 1 2026 these become 7am and 3pm Central. Change to 14 and 22 then.
+    - cron: '0 13 * * *'
+    - cron: '0 21 * * *'
+  workflow_dispatch:
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Fetch SAM.gov and email the report
+        env:
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          RECIPIENTS: ${{ secrets.RECIPIENTS }}
+        run: python watcher.py
+
