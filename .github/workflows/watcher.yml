@@ -2,10 +2,14 @@ name: SAM.gov watcher
 
 on:
   schedule:
-    # 13:00 and 21:00 UTC is 8am and 4pm Central while daylight saving is on.
-    # After November 1 2026 these become 7am and 3pm Central. Change to 14 and 22 then.
-    - cron: '0 13 * * *'
-    - cron: '0 21 * * *'
+    # 13:07 and 21:07 UTC is 8:07am and 4:07pm Central while daylight saving is on.
+    # After November 1 2026 these become 7:07am and 3:07pm Central. Change to 14 and 22 then.
+    #
+    # Deliberately NOT on the hour. GitHub queues scheduled runs and the top of every
+    # hour is its busiest moment, so :00 jobs get delayed and sometimes dropped entirely.
+    # The 13:00 run on 22 Sep 2026 never fired at all. This is GitHub's own advice.
+    - cron: '7 13 * * *'
+    - cron: '7 21 * * *'
   workflow_dispatch:
 
 jobs:
@@ -22,4 +26,3 @@ jobs:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           RECIPIENTS: ${{ secrets.RECIPIENTS }}
         run: python watcher.py
-
