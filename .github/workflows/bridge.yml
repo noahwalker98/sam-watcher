@@ -1,0 +1,58 @@
+name: Bridge send
+
+# A manually started job that sleeps until a target time and then sends.
+#
+# Why this exists: GitHub's scheduled trigger is not firing for this repository.
+# Measured 23 Sep 2026: manual dispatch 9 for 9, scheduled runs 2 out of roughly
+# 8 expected, and a probe on '*/5 * * * *' fired zero times in 15 minutes.
+# Manual dispatch is reliable, so this uses a manual dispatch that waits.
+#
+# It is a bridge, not the answer. The real fix is an external scheduler calling
+# the dispatch API. This exists so a report still goes out in the meantime.
+#
+# GitHub caps a job at 6 hours, so the target must be under about 5h45m away.
+# This always sends to the full list, because its only purpose is a real send.
+
+on:
+  workflow_dispatch:
+    inputs:
+      send_at_utc:
+        description: 'Target time today in UTC, HH:MM. 13:23 is 8:23am Central, 21:23 is 4:23pm Central.'
+        required: true
+        default: '21:23'
+
+jobs:
+  bridge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Wait until the target time
+        run: |
+          target="${{ inputs.send_at_utc }}"
+          now=$(date -u +%s)
+          tgt=$(date -u -d "$(date -u +%Y-%m-%d) $target" +%s)
+          if [ "$tgt" -le "$now" ]; then
+            echo "Target $target UTC already passed today. Refusing rather than sending at the wrong time."
+            exit 1
+          fi
+          wait=$((tgt - now))
+          if [ "$wait" -gt 20400 ]; then
+            echo "Target is $wait seconds away, past the 6 hour job cap. Start this closer to the time."
+            exit 1
+          fi
+          echo "Now $(date -u +%H:%M:%S) UTC. Sleeping ${wait}s until $target UTC."
+          sleep "$wait"
+          echo "Woke at $(date -u +%H:%M:%S) UTC."
+
+      - name: Send the report
+        env:
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          RECIPIENTS: ${{ secrets.RECIPIENTS }}
+        run: python watcher.py
