@@ -10,7 +10,8 @@ name: Bridge send
 # It is a bridge, not the answer. The real fix is an external scheduler calling
 # the dispatch API. This exists so a report still goes out in the meantime.
 #
-# GitHub caps a job at 6 hours, so the target must be under about 5h45m away.
+# GitHub caps a job at 6 hours (21600s). The guard below allows up to 5h50m of
+# sleep, leaving headroom for checkout, Python setup and the send itself.
 # This always sends to the full list, because its only purpose is a real send.
 
 on:
@@ -42,7 +43,7 @@ jobs:
             exit 1
           fi
           wait=$((tgt - now))
-          if [ "$wait" -gt 20400 ]; then
+          if [ "$wait" -gt 21000 ]; then
             echo "Target is $wait seconds away, past the 6 hour job cap. Start this closer to the time."
             exit 1
           fi
