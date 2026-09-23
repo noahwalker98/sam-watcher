@@ -10,8 +10,9 @@ name: Bridge send
 # It is a bridge, not the answer. The real fix is an external scheduler calling
 # the dispatch API. This exists so a report still goes out in the meantime.
 #
-# GitHub caps a job at 6 hours (21600s). The guard below allows up to 5h50m of
-# sleep, leaving headroom for checkout, Python setup and the send itself.
+# GitHub's hard cap on a job is 6 hours, 21600 seconds. The guard allows a sleep
+# of up to 21300 and the job timeout is 358 minutes, so there is real headroom
+# for checkout, Python setup and the send on top of the sleep.
 # This always sends to the full list, because its only purpose is a real send.
 
 on:
@@ -25,7 +26,7 @@ on:
 jobs:
   bridge:
     runs-on: ubuntu-latest
-    timeout-minutes: 355
+    timeout-minutes: 358
     steps:
       - uses: actions/checkout@v4
 
@@ -43,7 +44,7 @@ jobs:
             exit 1
           fi
           wait=$((tgt - now))
-          if [ "$wait" -gt 21000 ]; then
+          if [ "$wait" -gt 21300 ]; then
             echo "Target is $wait seconds away, past the 6 hour job cap. Start this closer to the time."
             exit 1
           fi
