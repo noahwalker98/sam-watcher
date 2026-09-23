@@ -1,0 +1,32 @@
+name: Scheduler probe
+
+# TEMPORARY diagnostic, 23 Sep 2026. DELETE once the question is answered.
+#
+# Question: does GitHub's cron fire reliably for this repository, and does the
+# hit rate depend on the time of day?
+#
+# Evidence so far: the only scheduled runs that have ever fired were 23:38 and
+# 23:48 UTC. Every attempt at 13:00, 13:23, 13:53 and 21:00 UTC was dropped
+# silently, both before and after this repository was made public.
+#
+# This runs every 5 minutes, which is GitHub's floor, and prints a timestamp.
+# Counting actual runs against expected runs gives the hit rate directly.
+#
+# SAFE BY CONSTRUCTION: this file contains no secrets, no Python, and no mail
+# code. It cannot email anyone even if every guard in it were wrong.
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print when this actually ran
+        run: |
+          echo "fired_at_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "event=${{ github.event_name }}"
+          echo "schedule=${{ github.event.schedule }}"
+
